@@ -1,0 +1,9 @@
+{
+  "default_format": "png",
+  "default_location": "current",
+  "jpeg_quality": 85,
+  "auto_open": false,
+  "prefer_gui": true,
+  "auto_numbering": true,
+  "log_level": "INFO"
+}
