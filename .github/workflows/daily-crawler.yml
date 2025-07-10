@@ -1,0 +1,59 @@
+name: Daily Tech Blog Crawler
+
+on:
+    schedule:
+        # 매일 오전 9시 (UTC 0시)에 실행
+        - cron: '0 0 * * *'
+    workflow_dispatch: # 수동 실행 가능
+
+jobs:
+    crawl-and-summarize:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Setup Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: '3.11'
+                  cache: 'pip'
+
+            - name: Install dependencies
+              run: |
+                  pip install -r automation/crawler/requirements.txt
+
+            - name: Run crawler
+              env:
+                  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+                  CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+                  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+                  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+                  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+              run: |
+                  cd automation/crawler
+                  python main.py
+
+            - name: Commit and push changes
+              run: |
+                  git config --local user.email "action@github.com"
+                  git config --local user.name "GitHub Action"
+                  git add research/trends/
+                  git diff --staged --quiet || git commit -m "🤖 Daily tech blog summary - $(date +'%Y-%m-%d')"
+                  git push
+
+            - name: Notify completion
+              uses: appleboy/telegram-action@master
+              with:
+                  to: ${{ secrets.TELEGRAM_CHAT_ID }}
+                  token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+                  message: |
+                      📰 오늘의 기술 블로그 요약이 완료되었습니다!
+
+                      📅 날짜: $(date +'%Y년 %m월 %d일')
+                      🔍 크롤링 완료: 6개 블로그
+                      📝 요약 생성: AI 기반 자동 요약
+
+                      확인하기: https://github.com/${{ github.repository }}/tree/main/research/trends
+
+                      #기술블로그 #일일요약 #자동화
