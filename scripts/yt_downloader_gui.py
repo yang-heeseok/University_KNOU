@@ -67,6 +67,15 @@ class GUIProgressHook:
             filesize = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
             self.queue.put({"type": "download_finished", "filesize": filesize})
 
+    def postprocessor_hook(self, d: dict):
+        """후처리(MP3 변환 등) 상태를 Queue에 전달."""
+        pp = d.get("postprocessor", "")
+        label = "MP3 변환" if "Audio" in pp else pp
+        if d["status"] == "started":
+            self.queue.put({"type": "pp_started", "label": label})
+        elif d["status"] == "finished":
+            self.queue.put({"type": "pp_finished", "label": label})
+
 
 # ── 메인 GUI 클래스 ───────────────────────────────────────────
 
@@ -298,7 +307,9 @@ class YTDownloaderGUI:
                 status_callback=lambda msg: self.msg_queue.put(msg),
                 cancel_event=self.cancel_event,
             )
-            downloader.progress = GUIProgressHook(self.msg_queue)
+            gui_hook = GUIProgressHook(self.msg_queue)
+            downloader.progress = gui_hook
+            downloader.pp_hook = gui_hook.postprocessor_hook
 
             if channel_mode:
                 downloader.download_channel(urls[0])
@@ -359,6 +370,18 @@ class YTDownloaderGUI:
                 size_str = f"{size / 1024 / 1024:.1f}MB" if size else ""
                 self._append_log(f"  다운로드 완료 ({size_str})")
                 self.progress_bar["value"] = 100
+
+            elif msg_type == "pp_started":
+                self.progress_bar.config(mode="indeterminate")
+                self.progress_bar.start(30)
+                self.status_var.set(f"{msg['label']} 중...")
+
+            elif msg_type == "pp_finished":
+                self.progress_bar.stop()
+                self.progress_bar.config(mode="determinate")
+                self.progress_bar["value"] = 100
+                self.status_var.set(f"{msg['label']} 완료")
+                self._append_log(f"  {msg['label']} 완료")
 
             elif msg_type == "log":
                 self._append_log(msg["text"])

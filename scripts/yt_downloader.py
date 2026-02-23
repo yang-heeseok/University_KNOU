@@ -51,6 +51,7 @@ yt-dlp가 지원하는 모든 사이트의 영상을 다운로드할 수 있습�
 """
 
 import argparse
+import io
 import os
 import re
 import sys
@@ -58,6 +59,13 @@ import json
 import unicodedata
 from datetime import datetime
 from pathlib import Path
+
+# Windows cp949 콘솔에서 유니코드(이모지, 특수문자) 출력 보장
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 try:
     import yt_dlp
@@ -137,6 +145,10 @@ class ProgressHook:
     """다운로드 진행률을 컬러 프로그레스바로 표시."""
 
     BAR_LEN = 40
+    _SPIN = ["|", "/", "-", "\\"]
+
+    def __init__(self):
+        self._spin_idx = 0
 
     def __call__(self, d: dict):
         if d["status"] == "downloading":
@@ -169,6 +181,20 @@ class ProgressHook:
                 f"{filesize / 1024 / 1024:.1f}MB" if filesize else "완료"
             )
             print(f"  \033[32m✓ 다운로드 완료\033[0m ({size_str})")
+
+    def postprocessor_hook(self, d: dict):
+        """후처리(MP3 변환 등) 상태 표시."""
+        pp = d.get("postprocessor", "")
+        if d["status"] == "started":
+            label = "MP3 변환" if "Audio" in pp else pp
+            spin = self._SPIN[self._spin_idx % len(self._SPIN)]
+            self._spin_idx += 1
+            sys.stdout.write(f"\r  \033[33m{spin} {label} 중...\033[0m   ")
+            sys.stdout.flush()
+        elif d["status"] == "finished":
+            sys.stdout.write("\r" + " " * 80 + "\r")
+            label = "MP3 변환" if "Audio" in pp else pp
+            print(f"  \033[32m✓ {label} 완료\033[0m")
 
 
 # ── 다운로드 이력 관리 ──────────────────────────────────────────
@@ -205,6 +231,7 @@ class YTDownloader:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.archive = DownloadArchive(self.output_dir / ".yt_archive")
         self.progress = ProgressHook()
+        self.pp_hook = self.progress.postprocessor_hook
         self.status_callback = status_callback or (lambda msg: None)
         self.cancel_event = cancel_event
         self.results: list[dict] = []
@@ -228,6 +255,7 @@ class YTDownloader:
         opts: dict = {
             "outtmpl": outtmpl,
             "progress_hooks": [self.progress],
+            "postprocessor_hooks": [self.pp_hook],
             "restrictfilenames": False,
             "windowsfilenames": True,
             "ignoreerrors": True,
