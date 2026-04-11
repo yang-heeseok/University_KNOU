@@ -56,6 +56,7 @@ import os
 import re
 import sys
 import json
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -149,6 +150,7 @@ class ProgressHook:
 
     def __init__(self):
         self._spin_idx = 0
+        self._pp_start: float | None = None
 
     def __call__(self, d: dict):
         if d["status"] == "downloading":
@@ -182,19 +184,35 @@ class ProgressHook:
             )
             print(f"  \033[32m✓ 다운로드 완료\033[0m ({size_str})")
 
+    def _pp_label(self, pp: str) -> str:
+        if "Audio" in pp:
+            return "MP3 변환"
+        if "EmbedSub" in pp:
+            return "자막 내장"
+        if "EmbedThumbnail" in pp:
+            return "썸네일 내장"
+        if "Metadata" in pp:
+            return "메타데이터 기록"
+        return pp
+
     def postprocessor_hook(self, d: dict):
-        """후처리(MP3 변환 등) 상태 표시."""
+        """후처리(MP3 변환, 자막 내장 등) 상태 표시 (경과 시간 포함)."""
         pp = d.get("postprocessor", "")
+        label = self._pp_label(pp)
         if d["status"] == "started":
-            label = "MP3 변환" if "Audio" in pp else pp
+            self._pp_start = time.time()
             spin = self._SPIN[self._spin_idx % len(self._SPIN)]
             self._spin_idx += 1
             sys.stdout.write(f"\r  \033[33m{spin} {label} 중...\033[0m   ")
             sys.stdout.flush()
         elif d["status"] == "finished":
+            elapsed = ""
+            if self._pp_start:
+                secs = time.time() - self._pp_start
+                elapsed = f" ({secs:.0f}초)"
+                self._pp_start = None
             sys.stdout.write("\r" + " " * 80 + "\r")
-            label = "MP3 변환" if "Audio" in pp else pp
-            print(f"  \033[32m✓ {label} 완료\033[0m")
+            print(f"  \033[32m✓ {label} 완료\033[0m{elapsed}")
 
 
 # ── 다운로드 이력 관리 ──────────────────────────────────────────
@@ -281,13 +299,29 @@ class YTDownloader:
             ]
         else:
             q = self.args.quality
+            aac = getattr(self.args, "aac", False)
             if q == "best":
-                opts["format"] = "bestvideo+bestaudio/best"
+                opts["format"] = "bestvideo*+bestaudio/best"
             else:
                 opts["format"] = (
-                    f"bestvideo[height<={q}]+bestaudio/best[height<={q}]/best"
+                    f"bestvideo*[height<={q}]+bestaudio/"
+                    f"best[height<={q}]/best"
                 )
-            opts["merge_output_format"] = "mp4"
+
+            if aac:
+                # MKV로 병합 → MP4 변환 (영상 복사, 오디오만 AAC 인코딩)
+                opts["merge_output_format"] = "mkv"
+                opts.setdefault("postprocessors", [])
+                opts["postprocessors"].insert(0, {
+                    "key": "FFmpegVideoConvertor",
+                    "preferedformat": "mp4",
+                })
+                opts.setdefault("postprocessor_args", {})
+                opts["postprocessor_args"]["FFmpegVideoConvertor"] = [
+                    "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                ]
+            else:
+                opts["merge_output_format"] = "mp4"
 
         # 자막
         if self.args.subs:
@@ -295,6 +329,25 @@ class YTDownloader:
             opts["writeautomaticsub"] = True
             opts["subtitleslangs"] = ["ko", "en"]
             opts["subtitlesformat"] = "srt/best"
+
+        # 자막 내장 (영상 파일에 자막 트랙으로 병합)
+        embed_subs = getattr(self.args, "embed_subs", False)
+        if embed_subs:
+            # 자막 내장을 위해 자막 다운로드도 함께 활성화
+            opts["writesubtitles"] = True
+            opts["writeautomaticsub"] = True
+            opts["subtitleslangs"] = ["ko", "en"]
+            opts["subtitlesformat"] = "srt/best"
+            opts.setdefault("postprocessors", [])
+            opts["postprocessors"].append({
+                "key": "FFmpegEmbedSubtitle",
+                "already_have_subtitle": False,
+            })
+            # 자막을 MP4 호환 형식(mov_text)으로 변환하며 모든 트랙 포함
+            opts.setdefault("postprocessor_args", {})
+            opts["postprocessor_args"]["FFmpegEmbedSubtitle"] = [
+                "-c:s", "mov_text",
+            ]
 
         # 썸네일
         if self.args.thumbnail:
@@ -612,7 +665,9 @@ def parse_args() -> argparse.Namespace:
         "--quality", "-q", default="best",
         help="영상 화질: best, 2160, 1080, 720, 480, 360 (기본: best)",
     )
+    p.add_argument("--aac", action="store_true", help="AAC 오디오 선택 (Windows 기본 플레이어 호환)")
     p.add_argument("--subs", "-s", action="store_true", help="자막 다운로드 (ko/en)")
+    p.add_argument("--embed-subs", action="store_true", help="자막을 영상에 내장 (mp4 자막 트랙)")
     p.add_argument("--thumbnail", "-t", action="store_true", help="썸네일 저장")
     p.add_argument("--metadata", "-m", action="store_true", help="메타데이터 임베드 (ffmpeg 필요)")
     p.add_argument("--channel", action="store_true", help="채널/계정 전체 백업 모드 (날짜별 폴더 정리)")

@@ -10,6 +10,7 @@ import argparse
 import queue
 import re
 import sys
+import time
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, scrolledtext
@@ -68,11 +69,20 @@ class GUIProgressHook:
             self.queue.put({"type": "download_finished", "filesize": filesize})
 
     def postprocessor_hook(self, d: dict):
-        """후처리(MP3 변환 등) 상태를 Queue에 전달."""
+        """후처리(MP3 변환, 자막 내장 등) 상태를 Queue에 전달."""
         pp = d.get("postprocessor", "")
-        label = "MP3 변환" if "Audio" in pp else pp
+        if "Audio" in pp:
+            label = "MP3 변환"
+        elif "EmbedSub" in pp:
+            label = "자막 내장"
+        elif "EmbedThumbnail" in pp:
+            label = "썸네일 내장"
+        elif "Metadata" in pp:
+            label = "메타데이터 기록"
+        else:
+            label = pp
         if d["status"] == "started":
-            self.queue.put({"type": "pp_started", "label": label})
+            self.queue.put({"type": "pp_started", "label": label, "start_time": time.time()})
         elif d["status"] == "finished":
             self.queue.put({"type": "pp_finished", "label": label})
 
@@ -89,6 +99,8 @@ class YTDownloaderGUI:
         self.msg_queue: queue.Queue = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker_thread: threading.Thread | None = None
+        self._pp_start_time: float | None = None
+        self._pp_label: str = ""
 
         self._build_ui()
         self._poll_queue()
@@ -121,12 +133,16 @@ class YTDownloaderGUI:
         opt_row.pack(fill=tk.X, padx=8, pady=6)
 
         self.mp3_var = tk.BooleanVar()
+        self.aac_var = tk.BooleanVar()
         self.subs_var = tk.BooleanVar()
+        self.embed_subs_var = tk.BooleanVar()
         self.thumb_var = tk.BooleanVar()
         self.meta_var = tk.BooleanVar()
 
         ttk.Checkbutton(opt_row, text="MP3 변환", variable=self.mp3_var).pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Checkbutton(opt_row, text="자막", variable=self.subs_var).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Checkbutton(opt_row, text="AAC", variable=self.aac_var).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Checkbutton(opt_row, text="자막", variable=self.subs_var).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Checkbutton(opt_row, text="자막 내장", variable=self.embed_subs_var).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(opt_row, text="썸네일", variable=self.thumb_var).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Checkbutton(opt_row, text="메타데이터", variable=self.meta_var).pack(side=tk.LEFT, padx=(0, 24))
 
@@ -334,9 +350,11 @@ class YTDownloaderGUI:
             batch=None,
             output=self.output_var.get(),
             mp3=self.mp3_var.get(),
+            aac=self.aac_var.get(),
             audio_quality=192,
             quality=self.quality_var.get(),
             subs=self.subs_var.get(),
+            embed_subs=self.embed_subs_var.get(),
             thumbnail=self.thumb_var.get(),
             metadata=self.meta_var.get(),
             cookies_from_browser=cookies if cookies != "없음" else None,
@@ -372,16 +390,24 @@ class YTDownloaderGUI:
                 self.progress_bar["value"] = 100
 
             elif msg_type == "pp_started":
+                self._pp_start_time = msg.get("start_time") or time.time()
+                self._pp_label = msg["label"]
                 self.progress_bar.config(mode="indeterminate")
                 self.progress_bar.start(30)
-                self.status_var.set(f"{msg['label']} 중...")
+                self.status_var.set(f"{msg['label']} 중... (0초)")
 
             elif msg_type == "pp_finished":
+                elapsed = ""
+                if self._pp_start_time:
+                    secs = time.time() - self._pp_start_time
+                    elapsed = f" ({secs:.0f}초)"
+                self._pp_start_time = None
+                self._pp_label = ""
                 self.progress_bar.stop()
                 self.progress_bar.config(mode="determinate")
                 self.progress_bar["value"] = 100
-                self.status_var.set(f"{msg['label']} 완료")
-                self._append_log(f"  {msg['label']} 완료")
+                self.status_var.set(f"{msg['label']} 완료{elapsed}")
+                self._append_log(f"  {msg['label']} 완료{elapsed}")
 
             elif msg_type == "log":
                 self._append_log(msg["text"])
@@ -409,6 +435,11 @@ class YTDownloaderGUI:
                 self.progress_bar["value"] = 0
                 self.status_var.set("완료")
                 self._append_log("=" * 50)
+
+        # 후처리 중 경과 시간 실시간 갱신
+        if self._pp_start_time:
+            elapsed = time.time() - self._pp_start_time
+            self.status_var.set(f"{self._pp_label} 중... ({elapsed:.0f}초)")
 
         self.root.after(100, self._poll_queue)
 
