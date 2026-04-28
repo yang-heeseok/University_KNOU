@@ -20,6 +20,8 @@
 
 const path = require('path');
 const fs   = require('fs');
+const os   = require('os');
+const { execSync } = require('child_process');
 
 // md-to-pdf 전역 설치 경로 자동 탐색
 function resolveMdToPdf() {
@@ -76,11 +78,65 @@ function parseArgs(argv) {
       case '--margin-right':      result.margin.right  = args[++i]; break;
       case '--output': case '-o': result.output        = args[++i]; break;
       case '--image-scale':       result.imageScale    = args[++i]; break;
+      case '--mermaid-scale':     result.mermaidScale  = args[++i]; break;
       default:
         if (!args[i].startsWith('--')) result.files.push(args[i]);
     }
   }
+  if (!result.mermaidScale) result.mermaidScale = '100%';
   return result;
+}
+
+// ─── mermaid 블록 사전 렌더링 ──────────────────────────────────────────────
+function findMmdc() {
+  // 1) PATH 에 등록된 mmdc 우선
+  try { execSync('mmdc --version', { stdio: 'pipe' }); return 'mmdc'; } catch (_) {}
+  // 2) npm 전역 bin 경로 탐색 (Windows: <prefix>/mmdc.cmd, *nix: <prefix>/bin/mmdc)
+  try {
+    const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    const prefix  = path.dirname(npmRoot);
+    const candidates = [
+      path.join(prefix, 'mmdc.cmd'),
+      path.join(prefix, 'mmdc'),
+      path.join(prefix, 'bin', 'mmdc'),
+    ];
+    for (const c of candidates) if (fs.existsSync(c)) return `"${c}"`;
+  } catch (_) {}
+  return null;
+}
+
+function preprocessMermaid(mdContent, mermaidScale, tempDir, mmdcCmd) {
+  const re = /```mermaid\r?\n([\s\S]*?)```/g;
+  let processed = mdContent;
+  const blocks = [];
+  let m, idx = 0;
+  while ((m = re.exec(mdContent)) !== null) {
+    blocks.push({ original: m[0], code: m[1], idx: idx++ });
+  }
+  if (blocks.length === 0) return processed;
+
+  console.log(`  Mermaid 블록 ${blocks.length}개 감지 → SVG 사전 렌더링`);
+
+  for (const b of blocks) {
+    const inputPath  = path.join(tempDir, `mermaid_${b.idx}.mmd`);
+    const outputPath = path.join(tempDir, `mermaid_${b.idx}.svg`);
+    fs.writeFileSync(inputPath, b.code);
+
+    try {
+      execSync(`${mmdcCmd} -i "${inputPath}" -o "${outputPath}" -b transparent`, { stdio: 'pipe' });
+      let svg = fs.readFileSync(outputPath, 'utf8');
+      // SVG 의 고정 width/height 속성 제거 → viewBox 기반으로 컨테이너에 맞춤
+      svg = svg.replace(/<svg([^>]*?)\swidth="[^"]*"/, '<svg$1');
+      svg = svg.replace(/<svg([^>]*?)\sheight="[^"]*"/, '<svg$1');
+      svg = svg.replace(/<svg([^>]*?)>/, `<svg$1 style="width:100%; height:auto;">`);
+      const wrapped = `\n\n<div style="width:${mermaidScale}; margin:0 auto; text-align:center;">\n\n${svg}\n\n</div>\n\n`;
+      processed = processed.replace(b.original, wrapped);
+      console.log(`    [${b.idx + 1}/${blocks.length}] OK (scale=${mermaidScale})`);
+    } catch (err) {
+      console.error(`    [${b.idx + 1}/${blocks.length}] 실패: ${err.message.split('\n')[0]}`);
+    }
+  }
+  return processed;
 }
 
 // ─── 도움말 ────────────────────────────────────────────────────────────────
@@ -104,13 +160,15 @@ Markdown → PDF 변환 스크립트
   --margin-right  <값>    오른쪽 여백 (기본: ${DEFAULT_MARGIN.right})
 
 기타:
-  --output, -o    <경로>  출력 파일 경로 (단일 파일 변환 시에만 사용 가능)
-  --help, -h              도움말 출력
+  --output, -o      <경로>  출력 파일 경로 (단일 파일 변환 시에만 사용 가능)
+  --image-scale     <값>    일반 이미지 크기 (예: 80%)
+  --mermaid-scale   <값>    Mermaid 다이어그램 크기 (기본: 100%)
+  --help, -h                도움말 출력
 `);
 }
 
 // ─── 단일 파일 변환 ────────────────────────────────────────────────────────
-async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale) {
+async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale, mermaidScale, mmdcCmd) {
   const absInput  = path.resolve(inputPath);
   const absOutput = outputPath
     ? path.resolve(outputPath)
@@ -127,15 +185,28 @@ async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale) {
 
   console.log(`\n  변환: ${path.relative(process.cwd(), absInput)}`);
   console.log(`  여백: top=${margin.top}  bottom=${margin.bottom}  left=${margin.left}  right=${margin.right}`);
-  if (imageScale) console.log(`  이미지 크기: ${imageScale}`);
+  if (imageScale)   console.log(`  이미지 크기: ${imageScale}`);
+  if (mermaidScale) console.log(`  Mermaid 크기: ${mermaidScale}`);
 
   const cssExtra = imageScale
     ? `img { max-width: ${imageScale} !important; width: ${imageScale} !important; display: block; }`
     : '';
 
+  // 임시 디렉토리 (mermaid SVG 캐시용)
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-to-pdf-'));
+
   try {
+    let mdContent = fs.readFileSync(absInput, 'utf8');
+
+    // mermaid 사전 렌더링 (mmdc 가용 시)
+    if (mmdcCmd && /```mermaid/.test(mdContent)) {
+      mdContent = preprocessMermaid(mdContent, mermaidScale, tempDir, mmdcCmd);
+    } else if (/```mermaid/.test(mdContent)) {
+      console.warn('  [경고] mmdc 미설치 → Mermaid 블록은 코드로 출력됩니다.');
+    }
+
     const result = await mdToPdf(
-      { path: absInput },
+      { content: mdContent, basedir: path.dirname(absInput) },
       { pdf_options: { format: 'a4', printBackground: true, margin }, css: cssExtra }
     );
 
@@ -151,6 +222,9 @@ async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale) {
   } catch (err) {
     console.error(`  [오류] 변환 실패: ${err.message}`);
     return false;
+  } finally {
+    // 임시 파일 정리
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
   }
 }
 
@@ -170,6 +244,10 @@ async function main() {
     process.exit(1);
   }
   const { mdToPdf } = require(mdToPdfPath);
+
+  // mmdc (mermaid-cli) 탐색 — 없으면 mermaid 블록은 그대로 출력
+  const mmdcCmd = findMmdc();
+  if (!mmdcCmd) console.warn('[경고] mmdc 미발견 → mermaid 블록은 렌더링되지 않습니다. (npm install -g @mermaid-js/mermaid-cli)');
 
   // glob 패턴 확장
   let allFiles = [];
@@ -204,7 +282,7 @@ async function main() {
   let success = 0;
   for (const file of allFiles) {
     const outPath = allFiles.length === 1 ? opts.output : null;
-    if (await convertFile(mdToPdf, file, outPath, opts.margin, opts.imageScale)) success++;
+    if (await convertFile(mdToPdf, file, outPath, opts.margin, opts.imageScale, opts.mermaidScale, mmdcCmd)) success++;
   }
 
   console.log('─'.repeat(50));
