@@ -196,19 +196,31 @@ async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale, m
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-to-pdf-'));
 
   try {
-    let mdContent = fs.readFileSync(absInput, 'utf8');
+    const rawContent = fs.readFileSync(absInput, 'utf8');
+    const hasMermaid = /```mermaid/.test(rawContent);
 
-    // mermaid 사전 렌더링 (mmdc 가용 시)
-    if (mmdcCmd && /```mermaid/.test(mdContent)) {
-      mdContent = preprocessMermaid(mdContent, mermaidScale, tempDir, mmdcCmd);
-    } else if (/```mermaid/.test(mdContent)) {
-      console.warn('  [경고] mmdc 미설치 → Mermaid 블록은 코드로 출력됩니다.');
+    let inputArg;
+    if (hasMermaid && mmdcCmd) {
+      // Mermaid 전처리가 필요한 경우: 원본 파일 옆에 임시 .md 작성 → path 로 전달
+      // (같은 디렉터리에 두어야 상대경로 이미지 참조가 그대로 해석됨)
+      const processed = preprocessMermaid(rawContent, mermaidScale, tempDir, mmdcCmd);
+      const tmpMd = path.join(path.dirname(absInput), `.md-to-pdf-${process.pid}.md`);
+      fs.writeFileSync(tmpMd, processed);
+      inputArg = { path: tmpMd, _cleanup: tmpMd };
+    } else {
+      if (hasMermaid) console.warn('  [경고] mmdc 미설치 → Mermaid 블록은 코드로 출력됩니다.');
+      // path 로 전달 → md-to-pdf 가 file:// 로 로드하여 상대경로 이미지가 정상 해석됨
+      inputArg = { path: absInput };
     }
 
     const result = await mdToPdf(
-      { content: mdContent, basedir: path.dirname(absInput) },
+      { path: inputArg.path },
       { pdf_options: { format: 'a4', printBackground: true, margin }, css: cssExtra }
     );
+
+    if (inputArg._cleanup) {
+      try { fs.unlinkSync(inputArg._cleanup); } catch (_) {}
+    }
 
     if (!result || !result.content) {
       console.error('  [오류] 변환 결과 없음');
