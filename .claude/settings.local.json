@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node scripts/md-to-pdf.js \"subjects/4-2/회귀모형/Submitted_Files/회귀모형_중간_202334-153257.md\" --margin-top 10mm --margin-bottom 10mm --margin-left 20mm --margin-right 20mm)",
+      "Bash(grep -m 2 \"file:///\" \"subjects/4-2/회귀모형/Submitted_Files/_tmp_for_pdf.md\")",
+      "Bash(node scripts/md-to-pdf.js \"subjects/4-2/회귀모형/Submitted_Files/회귀모형_중간_202334-153257.md\" --margin-top 9mm --margin-bottom 9mm --margin-left 20mm --margin-right 20mm)",
+      "Bash(git commit -m ' *)"
+    ]
+  }
+}
