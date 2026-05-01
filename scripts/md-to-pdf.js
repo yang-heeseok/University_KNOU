@@ -87,6 +87,61 @@ function parseArgs(argv) {
   return result;
 }
 
+// ─── KaTeX 수식 사전 렌더링 ────────────────────────────────────────────────
+// $$...$$ (display) 와 $...$ (inline) 을 KaTeX 로 HTML 변환하여 임베드.
+// md-to-pdf 는 LaTeX 를 인식하지 못하므로 사전 렌더링이 필요함.
+function loadKatex() {
+  // 프로젝트 로컬 → 글로벌 npm root 순서로 katex 모듈 탐색
+  const candidates = [
+    path.join(__dirname, '..', 'node_modules', 'katex'),
+  ];
+  try {
+    const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    candidates.push(path.join(npmRoot, 'katex'));
+  } catch (_) {}
+  for (const p of candidates) {
+    if (fs.existsSync(path.join(p, 'package.json'))) {
+      try { return require(p); } catch (_) {}
+    }
+  }
+  return null;
+}
+
+function preprocessKatex(mdContent, katex) {
+  if (!katex) return { content: mdContent, count: 0 };
+
+  let count = 0;
+  // 1) display math: $$ ... $$ (여러 줄 허용)
+  let processed = mdContent.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => {
+    try {
+      const html = katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: 'ignore' });
+      count++;
+      return `\n\n<div style="text-align:center; margin:0.6em 0;">${html}</div>\n\n`;
+    } catch (e) {
+      console.error(`    [KaTeX 오류] ${e.message.split('\n')[0]}`);
+      return _m;
+    }
+  });
+
+  // 2) inline math: $ ... $ (단일 라인, $ 이 단어 경계에서만 인식)
+  //    코드블록 보호를 위해 ` 사이의 $ 는 처리하지 않도록 split-process-rejoin
+  const segments = processed.split(/(`[^`]*`|```[\s\S]*?```)/g);
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].startsWith('`')) continue;
+    segments[i] = segments[i].replace(/(?<!\$)\$([^\$\n]+?)\$(?!\$)/g, (_m, tex) => {
+      try {
+        const html = katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: 'ignore' });
+        count++;
+        return html;
+      } catch (e) {
+        return _m;
+      }
+    });
+  }
+  processed = segments.join('');
+  return { content: processed, count };
+}
+
 // ─── mermaid 블록 사전 렌더링 ──────────────────────────────────────────────
 function findMmdc() {
   // 1) PATH 에 등록된 mmdc 우선
@@ -168,7 +223,7 @@ Markdown → PDF 변환 스크립트
 }
 
 // ─── 단일 파일 변환 ────────────────────────────────────────────────────────
-async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale, mermaidScale, mmdcCmd) {
+async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, imageScale, mermaidScale, mmdcCmd) {
   const absInput  = path.resolve(inputPath);
   const absOutput = outputPath
     ? path.resolve(outputPath)
@@ -198,24 +253,62 @@ async function convertFile(mdToPdf, inputPath, outputPath, margin, imageScale, m
   try {
     const rawContent = fs.readFileSync(absInput, 'utf8');
     const hasMermaid = /```mermaid/.test(rawContent);
+    const hasMath    = /\$\$[\s\S]+?\$\$|(?<!\$)\$[^\$\n]+?\$(?!\$)/.test(rawContent);
+
+    // KaTeX 모듈 로드 (수식이 있을 때만)
+    let katex = null;
+    if (hasMath) {
+      katex = loadKatex();
+      if (!katex) console.warn('  [경고] katex 미설치 → LaTeX 수식은 원문 그대로 출력됩니다. (npm install katex)');
+    }
+
+    // 마크다운 사전 처리 (Mermaid + KaTeX)
+    let needTempFile = false;
+    let processedContent = rawContent;
+
+    if (hasMath && katex) {
+      const r = preprocessKatex(processedContent, katex);
+      processedContent = r.content;
+      console.log(`  KaTeX 수식 ${r.count}개 렌더링`);
+      needTempFile = true;
+    }
+    if (hasMermaid && mmdcCmd) {
+      processedContent = preprocessMermaid(processedContent, mermaidScale, tempDir, mmdcCmd);
+      needTempFile = true;
+    } else if (hasMermaid) {
+      console.warn('  [경고] mmdc 미설치 → Mermaid 블록은 코드로 출력됩니다.');
+    }
 
     let inputArg;
-    if (hasMermaid && mmdcCmd) {
-      // Mermaid 전처리가 필요한 경우: 원본 파일 옆에 임시 .md 작성 → path 로 전달
+    if (needTempFile) {
+      // 사전 처리가 있는 경우: 원본 파일 옆에 임시 .md 작성 → path 로 전달
       // (같은 디렉터리에 두어야 상대경로 이미지 참조가 그대로 해석됨)
-      const processed = preprocessMermaid(rawContent, mermaidScale, tempDir, mmdcCmd);
       const tmpMd = path.join(path.dirname(absInput), `.md-to-pdf-${process.pid}.md`);
-      fs.writeFileSync(tmpMd, processed);
+      fs.writeFileSync(tmpMd, processedContent);
       inputArg = { path: tmpMd, _cleanup: tmpMd };
     } else {
-      if (hasMermaid) console.warn('  [경고] mmdc 미설치 → Mermaid 블록은 코드로 출력됩니다.');
       // path 로 전달 → md-to-pdf 가 file:// 로 로드하여 상대경로 이미지가 정상 해석됨
       inputArg = { path: absInput };
     }
 
+    // KaTeX CSS 를 stylesheet 으로 주입 (CDN, 문자열 URL)
+    // 주의: stylesheet 옵션은 기본값(md-to-pdf 번들 markdown.css) 을 "교체"하므로,
+    //      기본 markdown.css 를 직접 명시하여 함께 포함해야 함.
+    const stylesheets = [];
+    if (hasMath && katex) {
+      // mdToPdfPath = .../md-to-pdf/dist/index.js → 패키지 루트의 markdown.css 경로 계산
+      const defaultMarkdownCss = path.resolve(path.dirname(mdToPdfPath), '..', 'markdown.css');
+      if (fs.existsSync(defaultMarkdownCss)) stylesheets.push(defaultMarkdownCss);
+      stylesheets.push('https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css');
+    }
+
     const result = await mdToPdf(
       { path: inputArg.path },
-      { pdf_options: { format: 'a4', printBackground: true, margin }, css: cssExtra }
+      {
+        pdf_options: { format: 'a4', printBackground: true, margin },
+        css: cssExtra,
+        stylesheet: stylesheets.length > 0 ? stylesheets : undefined,
+      }
     );
 
     if (inputArg._cleanup) {
@@ -294,7 +387,7 @@ async function main() {
   let success = 0;
   for (const file of allFiles) {
     const outPath = allFiles.length === 1 ? opts.output : null;
-    if (await convertFile(mdToPdf, file, outPath, opts.margin, opts.imageScale, opts.mermaidScale, mmdcCmd)) success++;
+    if (await convertFile(mdToPdf, mdToPdfPath, file, outPath, opts.margin, opts.imageScale, opts.mermaidScale, mmdcCmd)) success++;
   }
 
   console.log('─'.repeat(50));
