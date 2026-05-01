@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Read(//c/Users/airto/.claude/**)"
+      "Read(//c/Users/airto/.claude/**)",
+      "Bash(git commit -m ' *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\airto\\.claude"
