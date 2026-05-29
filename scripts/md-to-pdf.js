@@ -72,6 +72,24 @@ const DEFAULT_MARGIN = {
   right:  '40mm',
 };
 
+// ─── 인쇄(PDF) 공통 CSS ─────────────────────────────────────────────────────
+// 표 테두리가 흐려 안 보이거나, 표 행·코드·이미지가 페이지 경계에서 잘리는 문제 방지.
+// (md-to-pdf 의 css 옵션은 번들 stylesheet 에 "추가"되므로 기본 스타일을 덮어쓰지 않음)
+const BASE_PRINT_CSS = `
+  /* 표 테두리: 번들 stylesheet(.markdown-body td 등 높은 특이성)가 덮어쓰므로 !important 로 강제 */
+  table { border-collapse: collapse !important; width: 100%; margin: 0.8em 0; border: 1px solid #555 !important; }
+  th, td, table tr th, table tr td { border: 1px solid #555 !important; padding: 5px 9px !important; vertical-align: top; word-break: break-word; }
+  /* 헤더/줄무늬 배경이 인쇄되도록 색 보정 (printBackground 와 병행) */
+  thead th { background: #e9edf1 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  table, th, td, tr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  thead { display: table-header-group; }                    /* 페이지 넘김 시 헤더 행 반복 */
+  tr  { page-break-inside: avoid; break-inside: avoid; }     /* 행이 페이지 경계에서 잘리지 않게 */
+  pre, blockquote, img, .katex-display { page-break-inside: avoid; break-inside: avoid; }
+  pre { white-space: pre-wrap; word-break: break-word; }     /* 긴 코드 가로 넘침 방지 */
+  h1, h2, h3, h4 { page-break-after: avoid; break-after: avoid; }  /* 제목 직후 페이지 넘김 방지 */
+  p, li { orphans: 2; widows: 2; }                          /* 문단 끝 한 줄 고립 방지 */
+`;
+
 // ─── 인자 파싱 ─────────────────────────────────────────────────────────────
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -261,9 +279,9 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
   if (imageScale)   console.log(`  이미지 크기: ${imageScale}`);
   if (mermaidScale) console.log(`  Mermaid 크기: ${mermaidScale}`);
 
-  const cssExtra = imageScale
-    ? `img { max-width: ${imageScale} !important; width: ${imageScale} !important; display: block; }`
-    : '';
+  const cssExtra = BASE_PRINT_CSS + (imageScale
+    ? `\nimg { max-width: ${imageScale} !important; width: ${imageScale} !important; display: block; }`
+    : '');
 
   // 임시 디렉토리 (mermaid SVG 캐시용)
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-to-pdf-'));
