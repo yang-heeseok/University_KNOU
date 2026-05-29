@@ -25,25 +25,39 @@ const { execSync } = require('child_process');
 
 // md-to-pdf 전역 설치 경로 자동 탐색
 function resolveMdToPdf() {
-  const candidates = [
-    // nvm 경로 (Windows)
-    path.join(process.env.NVM_HOME || '', 'v22.21.0', 'node_modules', 'md-to-pdf', 'dist', 'index.js'),
-    path.join(process.env.APPDATA  || '', 'Local', 'nvm', 'v22.21.0', 'node_modules', 'md-to-pdf', 'dist', 'index.js'),
-    // npm 전역 경로
-    path.join(process.env.APPDATA  || '', 'npm', 'node_modules', 'md-to-pdf', 'dist', 'index.js'),
-    '/usr/local/lib/node_modules/md-to-pdf/dist/index.js',
-    '/usr/lib/node_modules/md-to-pdf/dist/index.js',
-  ];
+  const SUB = path.join('node_modules', 'md-to-pdf', 'dist', 'index.js');
+  const candidates = [];
 
-  // npm root -g 로도 탐색
+  // npm root -g 를 최우선으로 탐색
   try {
-    const { execSync } = require('child_process');
     const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
-    candidates.unshift(path.join(npmRoot, 'md-to-pdf', 'dist', 'index.js'));
+    candidates.push(path.join(npmRoot, 'md-to-pdf', 'dist', 'index.js'));
   } catch (_) {}
 
+  // nvm 설치 경로의 모든 노드 버전 디렉터리를 동적으로 스캔 (버전 하드코딩 제거)
+  const nvmRoots = [
+    process.env.NVM_HOME,
+    process.env.APPDATA && path.join(process.env.APPDATA, 'Local', 'nvm'),
+    process.env.NVM_DIR && path.join(process.env.NVM_DIR, 'versions', 'node'),
+  ].filter(Boolean);
+  for (const root of nvmRoots) {
+    try {
+      for (const ver of fs.readdirSync(root)) {
+        candidates.push(path.join(root, ver, SUB));        // Windows nvm 배치
+        candidates.push(path.join(root, ver, 'lib', SUB)); // *nix nvm 배치
+      }
+    } catch (_) {}
+  }
+
+  // npm 전역 / 유닉스 표준 경로
+  candidates.push(
+    path.join(process.env.APPDATA || '', 'npm', SUB),
+    '/usr/local/lib/node_modules/md-to-pdf/dist/index.js',
+    '/usr/lib/node_modules/md-to-pdf/dist/index.js',
+  );
+
   for (const p of candidates) {
-    if (fs.existsSync(p)) return p;
+    if (p && fs.existsSync(p)) return p;
   }
   return null;
 }
@@ -111,8 +125,8 @@ function preprocessKatex(mdContent, katex) {
   if (!katex) return { content: mdContent, count: 0 };
 
   let count = 0;
-  // 1) display math: $$ ... $$ (여러 줄 허용)
-  let processed = mdContent.replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex) => {
+
+  const renderDisplay = (_m, tex) => {
     try {
       const html = katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false, strict: 'ignore' });
       count++;
@@ -121,25 +135,29 @@ function preprocessKatex(mdContent, katex) {
       console.error(`    [KaTeX 오류] ${e.message.split('\n')[0]}`);
       return _m;
     }
-  });
+  };
+  const renderInline = (_m, tex) => {
+    try {
+      const html = katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: 'ignore' });
+      count++;
+      return html;
+    } catch (e) {
+      return _m;
+    }
+  };
 
-  // 2) inline math: $ ... $ (단일 라인, $ 이 단어 경계에서만 인식)
-  //    코드블록 보호를 위해 ` 사이의 $ 는 처리하지 않도록 split-process-rejoin
-  const segments = processed.split(/(`[^`]*`|```[\s\S]*?```)/g);
+  // 코드블록을 먼저 분리해 보호한 뒤, 코드가 아닌 구간에서만
+  // display($$…$$) → inline($…$) 순으로 변환한다.
+  //  · 펜스(```…```) 패턴을 인라인(`…`)보다 앞에 두어야 ```블록``` 안의 $ 가 보호됨
+  //  · display 치환도 분리 후에 수행하여 코드블록 내부의 $$ 가 렌더링되지 않도록 함
+  const segments = mdContent.split(/(```[\s\S]*?```|`[^`]*`)/g);
   for (let i = 0; i < segments.length; i++) {
-    if (segments[i].startsWith('`')) continue;
-    segments[i] = segments[i].replace(/(?<!\$)\$([^\$\n]+?)\$(?!\$)/g, (_m, tex) => {
-      try {
-        const html = katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false, strict: 'ignore' });
-        count++;
-        return html;
-      } catch (e) {
-        return _m;
-      }
-    });
+    if (segments[i].startsWith('`')) continue;            // 코드 구간은 건너뜀
+    segments[i] = segments[i]
+      .replace(/\$\$([\s\S]+?)\$\$/g, renderDisplay)          // 1) display math
+      .replace(/(?<!\$)\$([^\$\n]+?)\$(?!\$)/g, renderInline); // 2) inline math
   }
-  processed = segments.join('');
-  return { content: processed, count };
+  return { content: segments.join(''), count };
 }
 
 // ─── mermaid 블록 사전 렌더링 ──────────────────────────────────────────────
@@ -249,6 +267,7 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
 
   // 임시 디렉토리 (mermaid SVG 캐시용)
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'md-to-pdf-'));
+  let tmpMd = null;  // 사전처리 임시 .md (예외 발생 시에도 finally 에서 정리)
 
   try {
     const rawContent = fs.readFileSync(absInput, 'utf8');
@@ -283,9 +302,9 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
     if (needTempFile) {
       // 사전 처리가 있는 경우: 원본 파일 옆에 임시 .md 작성 → path 로 전달
       // (같은 디렉터리에 두어야 상대경로 이미지 참조가 그대로 해석됨)
-      const tmpMd = path.join(path.dirname(absInput), `.md-to-pdf-${process.pid}.md`);
+      tmpMd = path.join(path.dirname(absInput), `.md-to-pdf-${process.pid}.md`);
       fs.writeFileSync(tmpMd, processedContent);
-      inputArg = { path: tmpMd, _cleanup: tmpMd };
+      inputArg = { path: tmpMd };
     } else {
       // path 로 전달 → md-to-pdf 가 file:// 로 로드하여 상대경로 이미지가 정상 해석됨
       inputArg = { path: absInput };
@@ -311,10 +330,6 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
       }
     );
 
-    if (inputArg._cleanup) {
-      try { fs.unlinkSync(inputArg._cleanup); } catch (_) {}
-    }
-
     if (!result || !result.content) {
       console.error('  [오류] 변환 결과 없음');
       return false;
@@ -328,7 +343,8 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
     console.error(`  [오류] 변환 실패: ${err.message}`);
     return false;
   } finally {
-    // 임시 파일 정리
+    // 임시 파일 정리 (예외 발생 시에도 원본 폴더의 임시 .md 까지 확실히 제거)
+    if (tmpMd) { try { fs.unlinkSync(tmpMd); } catch (_) {} }
     try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
   }
 }
