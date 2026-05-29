@@ -2,7 +2,27 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/airto/.claude/**)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "PowerShell(foreach \\($f in '13강.md','14강.md','15강.md'\\) { $t=Get-Content \"C:\\\\project\\\\airtown\\\\University_KNOU\\\\subjects\\\\4-1\\\\AI를위한수학의응용\\\\$f\" -Raw; $disp=[regex]::Matches\\($t,'\\\\$\\\\$'\\).Count; $inl=\\([regex]::Matches\\($t,'\\(?<!\\\\$\\)\\\\$\\(?!\\\\$\\)'\\)\\).Count; Write-Output \"$f : display `$`$=$disp \\(even=$\\($disp % 2 -eq 0\\)\\) | inline `$=$inl \\(even=$\\($inl % 2 -eq 0\\)\\)\" })",
+      "Bash(sed -n '405,416p' '13강. 군집분석 Ⅱ.md')",
+      "Bash(sed -n '479,486p' '13강. 군집분석 Ⅱ.md')",
+      "Bash(sed -n '120,124p' '13강. 군집분석 Ⅱ.md')",
+      "Bash(sed -n '415,422p' '4강. 의사결정나무 Ⅰ.md')",
+      "Bash(ls -la *.bak *.old *copy* *사본* *backup*)",
+      "Bash(ls -la Submitted_Files)",
+      "Read(//tmp/**)",
+      "Read(//c/tmp/**)",
+      "Bash(git diff *)",
+      "Bash(awk '{print $1\" +/-\"$2\"  \"$3}')",
+      "PowerShell(cd C:\\\\project\\\\airtown\\\\University_KNOU; $s = git status --short; \"$\\($s.Count\\) changed files\"; $s | Select-Object -First 40 | Out-String)",
+      "Bash(git --no-pager log --oneline -3)",
+      "Bash(echo \"RC=$?\")",
+      "Bash(GIT_PAGER=cat git status --short)",
+      "Bash(echo \"restore-exit=$?\")",
+      "PowerShell($base = \"c:\\\\project\\\\airtown\\\\University_KNOU\\\\subjects\\\\4-1\"; $dirs = [System.IO.Directory]::GetDirectories\\($base\\); $dirs | ForEach-Object { Write-Output $_ })",
+      "PowerShell($base = \"c:\\\\project\\\\airtown\\\\University_KNOU\\\\subjects\\\\4-1\"; if \\(Test-Path -LiteralPath $base\\) { Write-Output \"EXISTS: $base\" } else { Write-Output \"MISSING: $base\" }; $p = \"c:\\\\project\\\\airtown\\\\University_KNOU\\\\subjects\"; [System.IO.Directory]::GetDirectories\\($p\\) | ForEach-Object { Write-Output $_ })",
+      "Bash(git -C \"c:/project/airtown/University_KNOU\" status --porcelain)",
+      "Bash(echo \"EXIT:$?\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\airto\\.claude"
