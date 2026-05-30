@@ -3,6 +3,19 @@
 /**
  * Markdown → PDF 변환 스크립트
  *
+ * 목표:
+ *   VS Code 프리뷰(특히 Markdown Preview Enhanced) 및 일반적인 GitHub md 렌더링과
+ *   "동일한 외형"으로 PDF 를 생성한다. 이를 위해 아래 3가지를 자동 적용한다.
+ *     1) github-markdown-css 를 stylesheet 으로 적용 (색·표·blockquote·코드·폰트 = GitHub)
+ *     2) marked breaks:true → 단일 개행을 줄바꿈으로 처리 (MPE breakOnSingleNewLine 기본값과 동일)
+ *     3) <details> 에 open 자동 부여 → 접힌 본문이 PDF 에서 누락되지 않게 함
+ *   부가: KaTeX($$…$$ / $…$) 사전 렌더링, Mermaid(```mermaid```) SVG 사전 렌더링.
+ *
+ * 사전 설치(전역):
+ *   npm install -g md-to-pdf github-markdown-css
+ *   npm install -g @mermaid-js/mermaid-cli   # (선택) mermaid 다이어그램용
+ *   npm install -g katex                      # (선택) 수식용. 없으면 원문 그대로 출력
+ *
  * 사용법:
  *   node scripts/md-to-pdf.js <파일 또는 glob 패턴> [옵션]
  *
@@ -11,6 +24,8 @@
  *   node scripts/md-to-pdf.js "subjects/**\/integrated_report.md"
  *   node scripts/md-to-pdf.js report.md --margin-top 10mm --margin-bottom 10mm
  *   node scripts/md-to-pdf.js report.md -o output/report.pdf
+ *   # 폴더로 모아서(여러 파일은 -o 불가 → 파일별로 반복 실행):
+ *   #   for n in 1 2 3; do node scripts/md-to-pdf.js "다강/${n}강.md" -o "out/${n}강.pdf"; done
  *
  * 여백 기본값: md-to-pdf 기본(30mm)의 1/5 적용
  *   top: 6mm / bottom: 6mm / left: 20mm / right: 40mm
@@ -62,6 +77,26 @@ function resolveMdToPdf() {
   return null;
 }
 
+// ─── github-markdown-css 경로 탐색 ──────────────────────────────────────────
+// VS Code(Markdown Preview Enhanced) 및 일반적인 md 렌더링과 동일한 외형을 위해
+// GitHub 공식 스타일(github-markdown-css)을 적용한다.
+// 라이트 테마(github-markdown-light.css)를 우선 선택 → 다크모드 환경에서도 흰 배경 유지.
+function resolveGithubMarkdownCss() {
+  const names = ['github-markdown-light.css', 'github-markdown.css'];
+  const roots = [path.join(__dirname, '..', 'node_modules', 'github-markdown-css')];
+  try {
+    const npmRoot = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    roots.push(path.join(npmRoot, 'github-markdown-css'));
+  } catch (_) {}
+  for (const r of roots) {
+    for (const n of names) {
+      const p = path.join(r, n);
+      if (fs.existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
 // ─── 기본 여백 설정 ────────────────────────────────────────────────────────
 // md-to-pdf 기본값: top 30mm / bottom 30mm / left 20mm / right 40mm
 // 현재 설정: top/bottom을 1/5로 줄인 값 (30mm → 6mm)
@@ -72,22 +107,30 @@ const DEFAULT_MARGIN = {
   right:  '40mm',
 };
 
-// ─── 인쇄(PDF) 공통 CSS ─────────────────────────────────────────────────────
-// 표 테두리가 흐려 안 보이거나, 표 행·코드·이미지가 페이지 경계에서 잘리는 문제 방지.
-// (md-to-pdf 의 css 옵션은 번들 stylesheet 에 "추가"되므로 기본 스타일을 덮어쓰지 않음)
+// ─── 인쇄(PDF) 보조 CSS ─────────────────────────────────────────────────────
+// 색·테두리·여백 등 "시각 테마"는 github-markdown-css 가 담당한다(GitHub/프리뷰 외형 재현).
+// 여기서는 PDF 에서만 필요한 페이지 나눔·줄바꿈 동작과, 화면용 GitHub CSS 가
+// 인쇄 시 빠뜨리는 배경색 강제(.markdown-body 패딩/배경)만 보강한다.
+// (css 옵션은 stylesheet 뒤에 "추가"되므로 GitHub CSS 를 덮어쓸 수 있음)
 const BASE_PRINT_CSS = `
-  /* 표 테두리: 번들 stylesheet(.markdown-body td 등 높은 특이성)가 덮어쓰므로 !important 로 강제 */
-  table { border-collapse: collapse !important; width: 100%; margin: 0.8em 0; border: 1px solid #555 !important; }
-  th, td, table tr th, table tr td { border: 1px solid #555 !important; padding: 5px 9px !important; vertical-align: top; word-break: break-word; }
-  /* 헤더/줄무늬 배경이 인쇄되도록 색 보정 (printBackground 와 병행) */
-  thead th { background: #e9edf1 !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-  table, th, td, tr { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* GitHub CSS 의 .markdown-body 는 max-width/패딩이 화면 기준 → 인쇄 여백과 맞게 해제 */
+  .markdown-body { box-sizing: border-box; min-width: 0 !important; max-width: none !important; margin: 0 !important; padding: 0 !important; }
+  /* 표 헤더·줄무늬 배경이 인쇄되도록 색 보정 (printBackground 와 병행) */
+  .markdown-body table tr, .markdown-body table th, .markdown-body table td,
+  .markdown-body pre, .markdown-body code, .markdown-body blockquote {
+    -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important;
+  }
+  /* GitHub 표는 display:block + overflow 라 PDF 에서 폭이 줄어듦 → 일반 표로 펼침 */
+  .markdown-body table { display: table !important; width: 100% !important; overflow: visible !important; }
   thead { display: table-header-group; }                    /* 페이지 넘김 시 헤더 행 반복 */
   tr  { page-break-inside: avoid; break-inside: avoid; }     /* 행이 페이지 경계에서 잘리지 않게 */
-  pre, blockquote, img, .katex-display { page-break-inside: avoid; break-inside: avoid; }
-  pre { white-space: pre-wrap; word-break: break-word; }     /* 긴 코드 가로 넘침 방지 */
+  pre, blockquote, img, table, .katex-display { page-break-inside: avoid; break-inside: avoid; }
+  .markdown-body pre, .markdown-body pre > code { white-space: pre-wrap; word-break: break-word; }  /* 긴 코드 가로 넘침 방지 */
   h1, h2, h3, h4 { page-break-after: avoid; break-after: avoid; }  /* 제목 직후 페이지 넘김 방지 */
   p, li { orphans: 2; widows: 2; }                          /* 문단 끝 한 줄 고립 방지 */
+  /* <details>: 전처리에서 open 강제 → 본문이 PDF 에서 누락되지 않도록 안전망 */
+  details { page-break-inside: avoid; break-inside: avoid; }
+  details > *:not(summary) { display: block !important; }
 `;
 
 // ─── 인자 파싱 ─────────────────────────────────────────────────────────────
@@ -230,13 +273,32 @@ function preprocessMermaid(mdContent, mermaidScale, tempDir, mmdcCmd) {
   return processed;
 }
 
+// ─── <details> 강제 펼침 ───────────────────────────────────────────────────
+// <details> 는 open 속성이 없으면 Chromium 렌더링 시 본문이 접혀(display:none)
+// PDF 에 본문이 출력되지 않는다. 변환 전에 open 을 강제로 부여한다.
+// (이미 open 이 있는 경우는 건드리지 않음)
+function forceOpenDetails(mdContent) {
+  let count = 0;
+  const out = mdContent.replace(/<details(?![^>]*\bopen\b)([^>]*)>/gi, (_m, attrs) => {
+    count++;
+    return `<details open${attrs}>`;
+  });
+  return { content: out, count };
+}
+
 // ─── 도움말 ────────────────────────────────────────────────────────────────
 function printHelp() {
   console.log(`
 Markdown → PDF 변환 스크립트
+  (VS Code 프리뷰 / GitHub md 렌더링과 동일한 외형으로 변환)
+  자동 적용: github-markdown-css 스타일 · 단일개행 줄바꿈(breaks) · <details> 자동 펼침
 
 사용법:
   node scripts/md-to-pdf.js <파일 또는 glob> [옵션]
+
+사전 설치(전역):
+  npm install -g md-to-pdf github-markdown-css
+  (선택) npm install -g @mermaid-js/mermaid-cli katex
 
 예시:
   node scripts/md-to-pdf.js report.md
@@ -299,9 +361,19 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
       if (!katex) console.warn('  [경고] katex 미설치 → LaTeX 수식은 원문 그대로 출력됩니다. (npm install katex)');
     }
 
-    // 마크다운 사전 처리 (Mermaid + KaTeX)
+    // 마크다운 사전 처리 (Mermaid + KaTeX + details)
     let needTempFile = false;
     let processedContent = rawContent;
+
+    // <details> 강제 펼침 (접힌 본문이 PDF 에서 누락되는 문제 방지)
+    {
+      const r = forceOpenDetails(processedContent);
+      if (r.count > 0) {
+        processedContent = r.content;
+        console.log(`  <details> ${r.count}개 강제 펼침(open)`);
+        needTempFile = true;
+      }
+    }
 
     if (hasMath && katex) {
       const r = preprocessKatex(processedContent, katex);
@@ -328,20 +400,37 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
       inputArg = { path: absInput };
     }
 
-    // KaTeX CSS 를 stylesheet 으로 주입 (CDN, 문자열 URL)
-    // 주의: stylesheet 옵션은 기본값(md-to-pdf 번들 markdown.css) 을 "교체"하므로,
-    //      기본 markdown.css 를 직접 명시하여 함께 포함해야 함.
+    // ── 스타일시트 구성 ──
+    // stylesheet 옵션은 번들 markdown.css 를 "교체"한다.
+    // → github-markdown-css 를 베이스로 깔아 GitHub/프리뷰와 동일한 외형을 만든다.
+    //   (github-markdown-css 는 .markdown-body 셀렉터를 쓰므로 body_class 로 클래스 부여 필요)
     const stylesheets = [];
+    const ghCss = resolveGithubMarkdownCss();
+    if (ghCss) {
+      stylesheets.push(ghCss);
+    } else {
+      console.warn('  [경고] github-markdown-css 미설치 → 기본(번들) 스타일로 출력됩니다. (npm install -g github-markdown-css)');
+      if (hasMath && katex) {
+        // GitHub CSS 가 없으면 수식 가독성을 위해 번들 markdown.css 라도 유지
+        const defaultMarkdownCss = path.resolve(path.dirname(mdToPdfPath), '..', 'markdown.css');
+        if (fs.existsSync(defaultMarkdownCss)) stylesheets.push(defaultMarkdownCss);
+      }
+    }
+    // KaTeX CSS 를 stylesheet 으로 주입 (CDN, 문자열 URL)
     if (hasMath && katex) {
-      // mdToPdfPath = .../md-to-pdf/dist/index.js → 패키지 루트의 markdown.css 경로 계산
-      const defaultMarkdownCss = path.resolve(path.dirname(mdToPdfPath), '..', 'markdown.css');
-      if (fs.existsSync(defaultMarkdownCss)) stylesheets.push(defaultMarkdownCss);
       stylesheets.push('https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css');
     }
 
     const result = await mdToPdf(
       { path: inputArg.path },
       {
+        // breaks:true → 소스의 단일 개행(\n)을 <br> 로 변환.
+        //   VS Code 의 Markdown Preview Enhanced 는 breakOnSingleNewLine 기본값이 true 라
+        //   단일 개행을 줄바꿈으로 렌더링한다. 이를 그대로 재현하기 위함.
+        //   (false 면 보기·선택지의 가/나/다/라·①②③④ 줄이 한 문단으로 합쳐짐)
+        marked_options: { breaks: true, gfm: true },
+        // github-markdown-css 적용을 위해 <body> 에 markdown-body 클래스 부여
+        body_class: ghCss ? ['markdown-body'] : undefined,
         pdf_options: { format: 'a4', printBackground: true, margin },
         css: cssExtra,
         stylesheet: stylesheets.length > 0 ? stylesheets : undefined,
