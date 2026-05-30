@@ -141,6 +141,10 @@ function parseArgs(argv) {
     margin:      { ...DEFAULT_MARGIN },
     output:      null,
     imageScale:  null,
+    format:      'a4',
+    width:       null,
+    height:      null,
+    landscape:   false,
     help:        false,
   };
 
@@ -154,6 +158,10 @@ function parseArgs(argv) {
       case '--output': case '-o': result.output        = args[++i]; break;
       case '--image-scale':       result.imageScale    = args[++i]; break;
       case '--mermaid-scale':     result.mermaidScale  = args[++i]; break;
+      case '--format':            result.format        = args[++i]; break;
+      case '--width':             result.width         = args[++i]; break;
+      case '--height':            result.height        = args[++i]; break;
+      case '--landscape':         result.landscape     = true; break;
       default:
         if (!args[i].startsWith('--')) result.files.push(args[i]);
     }
@@ -321,7 +329,7 @@ Markdown → PDF 변환 스크립트
 }
 
 // ─── 단일 파일 변환 ────────────────────────────────────────────────────────
-async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, imageScale, mermaidScale, mmdcCmd) {
+async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, imageScale, mermaidScale, mmdcCmd, pageOpts) {
   const absInput  = path.resolve(inputPath);
   const absOutput = outputPath
     ? path.resolve(outputPath)
@@ -431,7 +439,20 @@ async function convertFile(mdToPdf, mdToPdfPath, inputPath, outputPath, margin, 
         marked_options: { breaks: true, gfm: true },
         // github-markdown-css 적용을 위해 <body> 에 markdown-body 클래스 부여
         body_class: ghCss ? ['markdown-body'] : undefined,
-        pdf_options: { format: 'a4', printBackground: true, margin },
+        pdf_options: (() => {
+          // width/height 가 지정되면 format 대신 사용 (Puppeteer 미지원 규격: B4 등)
+          const po = { printBackground: true, margin, landscape: !!(pageOpts && pageOpts.landscape) };
+          if (pageOpts && pageOpts.width && pageOpts.height) {
+            po.width  = pageOpts.width;
+            po.height = pageOpts.height;
+            // md-to-pdf 가 기본 pdf_options(format:'a4')을 깊게 병합하고
+            // Puppeteer 는 format 이 있으면 width/height 를 무시하므로 명시적으로 해제한다.
+            po.format = undefined;
+          } else {
+            po.format = (pageOpts && pageOpts.format) || 'a4';
+          }
+          return po;
+        })(),
         css: cssExtra,
         stylesheet: stylesheets.length > 0 ? stylesheets : undefined,
       }
@@ -507,10 +528,12 @@ async function main() {
   console.log(`\nMarkdown → PDF 변환 시작 (총 ${allFiles.length}개)`);
   console.log('─'.repeat(50));
 
+  const pageOpts = { format: opts.format, width: opts.width, height: opts.height, landscape: opts.landscape };
+
   let success = 0;
   for (const file of allFiles) {
     const outPath = allFiles.length === 1 ? opts.output : null;
-    if (await convertFile(mdToPdf, mdToPdfPath, file, outPath, opts.margin, opts.imageScale, opts.mermaidScale, mmdcCmd)) success++;
+    if (await convertFile(mdToPdf, mdToPdfPath, file, outPath, opts.margin, opts.imageScale, opts.mermaidScale, mmdcCmd, pageOpts)) success++;
   }
 
   console.log('─'.repeat(50));
