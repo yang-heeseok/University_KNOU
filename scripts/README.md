@@ -9,7 +9,7 @@
 | [`md-to-pdf.js`](md-to-pdf.js) | Markdown → A4 PDF 변환 (Mermaid 사전 렌더링 지원) | [md-to-pdf.README.md](md-to-pdf.README.md) |
 | [`yt_downloader.py`](yt_downloader.py), [`yt_downloader_gui.py`](yt_downloader_gui.py) | yt-dlp 기반 동영상 다운로더 (CLI / tkinter GUI) | [yt-downloader.README.md](yt-downloader.README.md) |
 | [`download-knou.py`](download-knou.py) | 로그인한 Chrome 창에서 KNOU 강의 요청을 감지해 MP4로 저장 | [download-knou.README.md](download-knou.README.md) |
-| [`knou_transcribe.py`](knou_transcribe.py) | 저장된 MP4를 TXT/SRT로 전사 | [download-knou.README.md](download-knou.README.md#음성-전사) |
+| [`knou_transcribe.py`](knou_transcribe.py) | 강의 영상 · 통화 · 인터뷰 녹음을 TXT/SRT로 전사 (모델 선택 · 화자 분리) | [download-knou.README.md](download-knou.README.md#음성-전사) |
 | [`build-docs.js`](build-docs.js) | 학습 아카이브 Markdown → HTML 정적 사이트 빌드 | (별도 문서 없음) |
 
 ## 빠른 사용 예시

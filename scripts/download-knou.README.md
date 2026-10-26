@@ -46,15 +46,27 @@ python .\download-knou.py
 python .\download-knou.py --transcribe
 ```
 
-이미 저장된 MP4만 전사하려면 `scripts` 폴더에서:
+이미 저장된 강의 영상이나 통화 · 인터뷰 녹음(MP4 · M4A · MP3 · WAV 등)을 전사하려면 `scripts` 폴더에서:
 
 ```powershell
 python .\knou_transcribe.py '.\downloads\강의.mp4'
+python .\knou_transcribe.py '.\downloads\강의.mp4' --model large-v3-turbo   # 빠르게
+python .\knou_transcribe.py '.\통화.m4a' --diarize --speakers 2            # 화자 나누기
 ```
 
-전사기는 영상과 같은 폴더에 같은 기본 이름의 UTF-8 `.txt`와 시간 정보가 있는 `.srt`를 만듭니다. 예를 들어 `강의.mp4`를 전사하면 `강의.txt`, `강의.srt`가 생깁니다. 기존 전사 파일은 덮어쓰지 않습니다. 음성이 한국어가 아니라면 독립 실행 명령에 `--language en`처럼 언어 코드를 지정할 수 있습니다.
+전사기는 입력 파일과 같은 폴더에 같은 기본 이름의 UTF-8 `.txt`와 시간 정보가 있는 `.srt`를 만듭니다. 예를 들어 `강의.mp4`를 전사하면 `강의.txt`, `강의.srt`가 생깁니다. 기존 전사 파일은 덮어쓰지 않습니다. 음성이 한국어가 아니라면 `--language en`처럼 언어 코드를 지정할 수 있습니다.
 
-전사는 로컬 CPU에서 실행합니다. 처음 사용하면 고정된 `Systran/faster-whisper-small` 모델을 다운로드하며, 긴 강의는 전사에 시간이 걸릴 수 있습니다. 모델 다운로드에는 인터넷 연결이 필요합니다. 기본 캐시 위치는 `%USERPROFILE%\.cache\huggingface\hub`이며, 이 PC에서 내려받은 모델 파일은 약 **464 MiB**(약 **486 MB**)입니다. 정확한 모델 경로는 실행할 때 출력됩니다. 이후 모델이 캐시에 있으면 음성 파일은 외부 전사 서비스로 전송하지 않습니다. 결과는 자동 생성 초안이므로 고유명사와 전문 용어를 확인하세요.
+| `--model` | 저장소 (리비전 고정) | 크기 | 쓰임 |
+|---|---|---|---|
+| `large-v3` **(기본)** | `Systran/faster-whisper-large-v3` | 약 3 GB | 정확도 우선. 이 PC(CPU) 기준 통화 2분 40초 전사 + 화자 분리에 약 2분 30초 |
+| `large-v3-turbo` | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` | 약 1.6 GB | 디코더를 줄여 빠름. 한국어 정확도는 large-v3 보다 조금 낮음 |
+| `small` | `Systran/faster-whisper-small` | 약 486 MB | 가장 빠름. 오인식이 많아 초안용 |
+
+`--diarize`는 `pyannote/speaker-diarization-community-1`(리비전 고정)로 화자를 나눠 `화자 1:` · `화자 2:`처럼 줄마다 표시합니다. 화자 수를 알면 `--speakers`로 지정합니다. ⚠️ **휴대폰 통화 녹음처럼 두 사람이 한 채널에 섞이고 음질이 낮으면 문장 중간에 화자가 바뀌는 오류가 잦습니다** — 대면 녹음에서 더 쓸 만하며, 결과는 내용으로 다시 확인하세요. 화자 번호는 파일마다 새로 붙으므로 같은 사람이라도 파일 사이에 번호가 다를 수 있습니다.
+
+전사와 화자 분리는 모두 로컬 CPU에서 실행합니다. 모델은 캐시(`%USERPROFILE%\.cache\huggingface\hub`)를 먼저 쓰고, 없을 때만 내려받습니다. pyannote 사용 통계 전송은 끕니다. 음성 파일은 외부 서비스로 보내지 않습니다. 결과는 자동 생성 초안이므로 고유명사와 전문 용어를 확인하세요.
+
+**이 PC에서 huggingface.co 접속이 막힐 때** (2026-10-27 확인: TLS 단계에서 연결 재설정) — 접속되는 다른 기기(예: Mac)에서 같은 리비전을 `snapshot_download(..., cache_dir=임시폴더)`로 받은 뒤 `snapshots/<리비전>/` 폴더를 이 PC의 `models--<조직>--<이름>/snapshots/` 아래로 복사하고 `refs/main`에 리비전을 적으면 캐시로 인식됩니다.
 
 ## 파일명과 중복 처리
 
