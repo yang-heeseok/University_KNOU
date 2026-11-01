@@ -429,7 +429,9 @@ class YTDownloader:
         opts = self._build_opts()
         with yt_dlp.YoutubeDL(opts) as ydl:
             try:
-                ydl.download([url])
+                if ydl.download([url]):
+                    # ignoreerrors=True라 실패해도 예외 대신 retcode만 돌려준다
+                    raise RuntimeError("yt-dlp가 오류를 보고했습니다 (위 ERROR 로그 참고)")
                 self.archive.add(video_id)
                 self.results.append({"id": video_id, "title": title, "status": "ok"})
             except Exception as e:
@@ -470,7 +472,9 @@ class YTDownloader:
 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 try:
-                    ydl.download([entry.get("url") or entry.get("webpage_url", "")])
+                    if ydl.download([entry.get("url") or entry.get("webpage_url", "")]):
+                        # ignoreerrors=True라 실패해도 예외 대신 retcode만 돌려준다
+                        raise RuntimeError("yt-dlp가 오류를 보고했습니다 (위 ERROR 로그 참고)")
                     self.archive.add(video_id)
                     self.results.append(
                         {"id": video_id, "title": title, "status": "ok"}
@@ -566,7 +570,9 @@ class YTDownloader:
 
             with yt_dlp.YoutubeDL(opts) as ydl:
                 try:
-                    ydl.download([video_url])
+                    if ydl.download([video_url]):
+                        # ignoreerrors=True라 실패해도 예외 대신 retcode만 돌려준다
+                        raise RuntimeError("yt-dlp가 오류를 보고했습니다 (위 ERROR 로그 참고)")
                     self.archive.add(video_id)
                     self.results.append(
                         {"id": video_id, "title": title, "status": "ok"}
